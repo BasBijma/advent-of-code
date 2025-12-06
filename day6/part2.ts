@@ -33,3 +33,26 @@ for (let i = 0; i < operations.length; i++) {
 }
 
 console.log(result);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
