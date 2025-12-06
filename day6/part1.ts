@@ -1,30 +1,18 @@
-import { getInputFile } from '../globals'; // automates getting input.txt for corresponding day for every day 
+import { getInputFile } from '../globals';
 const input = getInputFile(import.meta.url).split('\n').map(line => line.split(' ').filter(char => char !== ''));
+
+const operations = input[0].map((_, i) => input.map(row => row[i]));
+
 let result = 0;
-let operations: any[] = [];
-
-
-for (let i = 0; i < input.length; i++) {
-    const numbers = []
-    for(let j = 0; j < input.length; j++) {
-        numbers.push(input[j][i])
-    }
-    operations.push(numbers)    
-}
-
 for (const operation of operations) {
-    let operationResult = 0
-    const operator = operation[operation.length - 1]
-    for (let i = 0; i < operation.length - 1; i++) {
-        if (operator === '+') {
-            operationResult += parseInt(operation[i])
-        }
-        if (operator === '*') {
-            if (operationResult === 0) operationResult = 1
-            operationResult *= parseInt(operation[i])
-        }
+    const operator = operation.at(-1);
+    const numbers = operation.slice(0, -1).map(n => parseInt(n));
+    let operationResult = operator === '+' ? 0 : 1;
+    for (const num of numbers) {
+        if (operator === '+') operationResult += num;
+        if (operator === '*') operationResult *= num;
     }
-    result += operationResult
+    result += operationResult;
 }
 
 console.log(result);
