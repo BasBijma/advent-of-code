@@ -1,12 +1,14 @@
 import { getInputFile } from '../globals';
 const input = getInputFile(import.meta.url).split('\n').map(line => line.split(''));
 
+// Reverse the input to lines & index operations
 const lines = input.slice(0, -1).map(row => [...row].reverse());
 const operators = input.at(-1)!.filter(c => c !== ' ').reverse();
 
 const operations: number[][] = [];
 let currentOperation: string[][] = [];
 
+// group operations & create new operation if empty column is found
 for (let i = 0; i < lines[0].length; i++) {
     const operation = lines.map(row => row[i]);
     if (operation.every(char => char === ' ')) {
@@ -16,8 +18,10 @@ for (let i = 0; i < lines[0].length; i++) {
         currentOperation.push(operation);
     }
 }
+// push most left column as operation
 if (currentOperation.length) operations.push(currentOperation.map(c => parseInt(c.join('').trim())));
 
+// execute operations
 let result = 0;
 for (let i = 0; i < operations.length; i++) {
     let operationResult = operators[i] === '+' ? 0 : 1;
