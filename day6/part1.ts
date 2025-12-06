@@ -1,7 +1,7 @@
 import { getInputFile } from '../globals';
 const input = getInputFile(import.meta.url).split('\n').map(line => line.split(' ').filter(char => char !== ''));
 
-const operations = input[0].map((_, i) => input.map(row => row[i]));
+const operations = input[0].map((_, i) => input.map(row => { return row[i]; }));
 
 let result = 0;
 for (const operation of operations) {
