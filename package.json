@@ -1,7 +1,7 @@
 {
   "name": "AOC",
   "version": "1.0.0",
-  "description": "elfjes klatsen",
+  "description": "elfjes klatschen",
   "main": "day1.ts",
   "author": "Bas Bijma",
   "license": "MIT",
