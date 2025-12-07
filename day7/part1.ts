@@ -4,10 +4,11 @@ let result = 0;
 
 console.log(input)
 
-for (let i = 0; i < input.length; i++) {
-    for(let j = 0; j < input[i].length; j++) {
-        
-        
+for (let y = 0; y < input.length; y++) {
+    for(let x = 0; x < input[y].length; x++) {
+        if (input[y][x] === '|') {
+            result += 1;
+        }
     }
 }
 
