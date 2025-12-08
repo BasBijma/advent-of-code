@@ -6,9 +6,7 @@ console.log(input)
 
 for (let i = 0; i < input.length; i++) {
     for(let j = 0; j < input[i].length; j++) {
-        if (input[i][j] === '0') {
-            result += 1;
-        }
+        
     }
 }
 
