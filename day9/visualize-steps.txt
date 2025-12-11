@@ -1,0 +1,251 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    STAP-VOOR-STAP VISUALISATIE                               ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 0: INPUT - De hoekpunten van de polygon
+════════════════════════════════════════════════════════════════════════════════
+
+Input coördinaten (x,y):
+  1. (7,1)  →  2. (11,1)
+  2. (11,1) →  3. (11,7)  
+  3. (11,7) →  4. (9,7)
+  4. (9,7)  →  5. (9,5)
+  5. (9,5)  →  6. (2,5)
+  6. (2,5)  →  7. (2,3)
+  7. (2,3)  →  8. (7,3)
+  8. (7,3)  →  1. (7,1)   (terug naar start)
+
+Als we dit tekenen op een echt grid (y naar beneden):
+
+    x: 1  2  3  4  5  6  7  8  9 10 11 12
+  y: ┌──────────────────────────────────────
+  0  │  .  .  .  .  .  .  .  .  .  .  .  .
+  1  │  .  .  .  .  .  .  A━━━━━━━━━━━B  .   A=(7,1) B=(11,1)
+  2  │  .  .  .  .  .  .  ┃  .  .  .  ┃  .
+  3  │  .  H━━━━━━━━━━━━━━G  .  .  .  ┃  .   G=(7,3) H=(2,3)
+  4  │  .  ┃  .  .  .  .  .  .  .  .  ┃  .
+  5  │  .  E━━━━━━━━━━━━━━━━━━F  .  .  ┃  .   E=(2,5) F=(9,5)
+  6  │  .  .  .  .  .  .  .  .  ┃  .  ┃  .
+  7  │  .  .  .  .  .  .  .  .  D━━━━━C  .   C=(11,7) D=(9,7)
+  8  │  .  .  .  .  .  .  .  .  .  .  .  .
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 1:  Maak lijnsegmenten van de randen
+════════════════════════════════════════════════════════════════════════════════
+
+Elk segment verbindt 2 opeenvolgende hoekpunten:
+
+  Segment 1: (7,1) → (11,1)   HORIZONTAAL  y=1, x van 7 tot 11   ━━━
+  Segment 2: (11,1) → (11,7)  VERTICAAL    x=11, y van 1 tot 7   ┃
+  Segment 3: (11,7) → (9,7)   HORIZONTAAL  y=7, x van 9 tot 11   ━━━
+  Segment 4: (9,7) → (9,5)    VERTICAAL    x=9, y van 5 tot 7    ┃
+  Segment 5: (9,5) → (2,5)    HORIZONTAAL  y=5, x van 2 tot 9    ━━━
+  Segment 6: (2,5) → (2,3)    VERTICAAL    x=2, y van 3 tot 5    ┃
+  Segment 7: (2,3) → (7,3)    HORIZONTAAL  y=3, x van 2 tot 7    ━━━
+  Segment 8: (7,3) → (7,1)    VERTICAAL    x=7, y van 1 tot 3    ┃
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 2: Functie om te checken of punt op rand ligt
+════════════════════════════════════════════════════════════════════════════════
+
+Deze functie krijgt een (x,y) en checkt:
+  - Voor HORIZONTALE segmenten: ligt y op de lijn EN x tussen de endpoints?
+  - Voor VERTICALE segmenten: ligt x op de lijn EN y tussen de endpoints?
+
+Voorbeelden:
+  isOnPerimeter(7,1)  → JA  (hoekpunt)
+  isOnPerimeter(8,1)  → JA  (op horizontale lijn tussen 7 en 11)
+  isOnPerimeter(5,5)  → JA  (op horizontale lijn tussen 2 en 9)
+  isOnPerimeter(5,4)  → NEE (niet op een segment)
+  isOnPerimeter(1,1)  → NEE (buiten de polygon)
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 3: Coördinaat compressie
+════════════════════════════════════════════════════════════════════════════════
+
+Probleem: Echte grid is groot (12x8 = 96 cellen -- echte input kan veel groter zijn)
+Oplossing: Gebruik alleen de "belangrijke" coördinaten
+
+Unieke X-waarden uit input: 2, 7, 9, 11
+Unieke Y-waarden uit input: 1, 3, 5, 7
+
+We voegen toe:
+  - Eén punt VOOR de eerste waarde (voor "buiten")
+  - Eén punt NA de laatste waarde (voor "buiten")  
+  - Punten TUSSEN elke waarde (voor flood fill doorgangen)
+
+xCoords wordt:
+  Index:   0    1    2    3    4    5    6    7    8
+  Waarde:  1    2    3    7    8    9   10   11   12
+           ↑    ↑    ↑    ↑    ↑    ↑    ↑    ↑    ↑
+         buiten hoek tussen hoek tussen hoek tussen hoek buiten
+
+yCoords wordt:
+  Index:   0    1    2    3    4    5    6    7    8
+  Waarde:  0    1    2    3    4    5    6    7    8
+           ↑    ↑    ↑    ↑    ↑    ↑    ↑    ↑    ↑
+         buiten hoek tussen hoek tussen hoek tussen hoek buiten
+
+Mapping (xToIdx / yToIdx):
+  Echte x=2  → grid index 1     Echte y=1  → grid index 1
+  Echte x=7  → grid index 3     Echte y=3  → grid index 3
+  Echte x=9  → grid index 5     Echte y=5  → grid index 5
+  Echte x=11 → grid index 7     Echte y=7  → grid index 7
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 3b: VERGELIJKING - Normale grid vs Gecomprimeerde grid
+════════════════════════════════════════════════════════════════════════════════
+
+NORMALE GRID (13 x 9 = 117 cellen):
+Elke cel = 1 coördinaat
+
+     x:  0   1   2   3   4   5   6   7   8   9  10  11  12
+    ─────────────────────────────────────────────────────────
+ y=0│    .   .   .   .   .   .   .   .   .   .   .   .   .
+ y=1│    .   .   .   .   .   .   .   #   #   #   #   #   .
+ y=2│    .   .   .   .   .   .   .   #   .   .   .   #   .
+ y=3│    .   .   #   #   #   #   #   #   .   .   .   #   .
+ y=4│    .   .   #   .   .   .   .   .   .   .   .   #   .
+ y=5│    .   .   #   #   #   #   #   #   #   #   .   #   .
+ y=6│    .   .   .   .   .   .   .   .   .   #   .   #   .
+ y=7│    .   .   .   .   .   .   .   .   .   #   #   #   .
+ y=8│    .   .   .   .   .   .   .   .   .   .   .   .   .
+
+GECOMPRIMEERDE GRID (9 x 9 = 81 cellen):
+Elke cel = een "belangrijke" coördinaat of tussenruimte
+
+     xi:  0   1   2   3   4   5   6   7   8
+     x:   1   2   3   7   8   9  10  11  12
+    ────────────────────────────────────────
+yi=0 y=0│ .   .   .   .   .   .   .   .   .
+yi=1 y=1│ .   .   .   #   #   #   #   #   .
+yi=2 y=2│ .   .   .   #   .   .   .   #   .
+yi=3 y=3│ .   #   #   #   .   .   .   #   .
+yi=4 y=4│ .   #   .   .   .   .   .   #   .
+yi=5 y=5│ .   #   #   #   #   #   .   #   .
+yi=6 y=6│ .   .   .   .   .   #   .   #   .
+yi=7 y=7│ .   .   .   .   .   #   #   #   .
+yi=8 y=8│ .   .   .   .   .   .   .   .   .
+
+WAT IS HET VERSCHIL?
+
+Normale grid:                    Gecomprimeerde grid:
+  x gaat: 0,1,2,3,4,5,6,7...       x gaat: 1,2,3,7,8,9,10,11,12
+                                          ↑     ↑
+                                   Springt van 3 naar 7!
+
+In de normale grid:              In de gecomprimeerde grid:
+  - x=3 en x=4 zijn BUREN          - x=3 (index 2) en x=7 (index 3) zijn BUREN
+  - Je moet ALLE cellen checken    - Je checkt alleen belangrijke punten
+
+WAAROM WERKT DIT?
+
+De polygon heeft alleen hoekpunten op x = 2, 7, 9, 11
+Alles tussen x=3 en x=6 is "hetzelfde" → geen rand daar
+Dus we slaan die over en houden alleen:
+  - De hoekpunten zelf (2, 7, 9, 11)
+  - Eén punt ertussen voor flood fill (3, 8, 10)
+  - Rand punten buiten (1, 12)
+
+BESPARING:
+
+  Normale grid:        13 × 9 = 117 cellen
+  Gecomprimeerde grid:  9 × 9 =  81 cellen
+  
+  Bij grotere input (bv. coördinaten tot 1.000.000):
+    Normale grid:        1.000.000 × 1.000.000 = 1.000.000.000.000 cellen (ONMOGELIJK!)
+    Gecomprimeerde grid: ~2n × 2n = slechts duizenden cellen (SNEL!)
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 4: Markeer de rand op de gecomprimeerde grid
+════════════════════════════════════════════════════════════════════════════════
+
+Voor elke cel in de 9x9 gecomprimeerde grid:
+  Check of isOnPerimeter(xCoords[xi], yCoords[yi]) true is
+
+     xi:  0   1   2   3   4   5   6   7   8
+     x:   1   2   3   7   8   9  10  11  12
+    ────────────────────────────────────────
+yi=0 y=0│ .   .   .   .   .   .   .   .   .    . = geen rand
+yi=1 y=1│ .   .   .   #   #   #   #   #   .    # = WEL rand
+yi=2 y=2│ .   .   .   #   .   .   .   #   .
+yi=3 y=3│ .   #   #   #   .   .   .   #   .
+yi=4 y=4│ .   #   .   .   .   .   .   #   .
+yi=5 y=5│ .   #   #   #   #   #   .   #   .
+yi=6 y=6│ .   .   .   .   .   #   .   #   .
+yi=7 y=7│ .   .   .   .   .   #   #   #   .
+yi=8 y=8│ .   .   .   .   .   .   .   .   .
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 5: Flood fill vanaf buiten
+════════════════════════════════════════════════════════════════════════════════
+
+Start bij (0,0) = buiten de polygon
+Vul alle bereikbare cellen die NIET op de rand (#) liggen
+
+     xi:  0   1   2   3   4   5   6   7   8
+     x:   1   2   3   7   8   9  10  11  12
+    ────────────────────────────────────────
+yi=0 y=0│ O   O   O   O   O   O   O   O   O    O = exterior (buiten)
+yi=1 y=1│ O   O   O   #   #   #   #   #   O    # = rand (blokkeert)
+yi=2 y=2│ O   O   O   #   .   .   .   #   O    . = interior (binnen)
+yi=3 y=3│ O   #   #   #   .   .   .   #   O
+yi=4 y=4│ O   #   .   .   .   .   .   #   O
+yi=5 y=5│ O   #   #   #   #   #   .   #   O
+yi=6 y=6│ O   O   O   O   O   #   .   #   O
+yi=7 y=7│ O   O   O   O   O   #   #   #   O
+yi=8 y=8│ O   O   O   O   O   O   O   O   O
+
+De flood fill kan NIET bij de punten met "." komen → die zijn BINNEN!
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 6:  Check of rechthoek binnen polygon past
+════════════════════════════════════════════════════════════════════════════════
+
+Gegeven twee hoekpunten (x1,y1) en (x2,y2):
+  1. Vertaal naar grid-indices via xToIdx/yToIdx
+  2. Check ALLE cellen in die rechthoek
+  3. Als er OOK MAAR ÉÉN cel in "exterior" zit → ONGELDIG
+
+Voorbeeld 1: Rechthoek van (7,1) tot (11,3)
+  Grid indices: x=[3..7], y=[1..3]
+  
+    xi:  3   4   5   6   7
+    ─────────────────────────
+yi=1│    #   #   #   #   #     Alle cellen zijn # of .
+yi=2│    #   .   .   .   #     Geen O aanwezig
+yi=3│    #   .   .   .   #     → GELDIG! ✓
+
+Voorbeeld 2: Rechthoek van (2,1) tot (7,3)
+  Grid indices: x=[1..3], y=[1..3]
+  
+    xi:  1   2   3
+    ─────────────────
+yi=1│    O   O   #     O gevonden bij (1,1) en (2,1)
+yi=2│    O   O   #     → ONGELDIG! ✗
+yi=3│    #   #   #
+
+════════════════════════════════════════════════════════════════════════════════
+STAP 7: Vind de grootste geldige rechthoek
+════════════════════════════════════════════════════════════════════════════════
+
+Probeer ALLE combinaties van 2 hoekpunten uit de input:
+  (7,1)-(11,1), (7,1)-(11,7), (7,1)-(9,7), ...
+
+Voor elke combinatie:
+  1. Check of rechthoek geldig is (geen exterior cellen)
+  2. Bereken oppervlakte: (|x2-x1|+1) × (|y2-y1|+1)
+  3. Onthoud de grootste
+
+Voorbeeld berekeningen:
+  (7,1) tot (11,5): Check... GELDIG! Area = (11-7+1)×(5-1+1) = 5×5 = 25
+  (7,1) tot (9,7):  Check... GELDIG! Area = (9-7+1)×(7-1+1) = 3×7 = 21
+  (2,3) tot (11,5): Check... GELDIG! Area = (11-2+1)×(5-3+1) = 10×3 = 30 ✓
+
+════════════════════════════════════════════════════════════════════════════════
+EINDRESULTAAT
+════════════════════════════════════════════════════════════════════════════════
+
+De grootste rechthoek die volledig binnen de polygon past!
+
