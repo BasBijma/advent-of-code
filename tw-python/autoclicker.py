@@ -28,8 +28,10 @@ TARGET_URL_SUBSTR = "tribalwars.nl"
 # CSS selector for the element to click. Override at the prompt or here.
 DEFAULT_CLICK_SELECTOR = "#troop_confirm_submit"  # the "send attack" confirm button
 
-# CDP click is dispatched directly into Chrome's input pipeline; latency is
-# the WebSocket round-trip (~1-3ms locally). Tune if you see consistent miss.
+# CDP click is dispatched directly into Chrome's input pipeline;
+# the WebSocket round-trip (~1-3ms locally). 
+# Network Jitter & latency can affect timing depending on server congestion and connection quality.
+# Tune if you see consistent miss.
 INPUT_JITTER_LATENCY_MS = 35
 
 
