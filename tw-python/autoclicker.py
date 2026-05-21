@@ -29,10 +29,14 @@ TARGET_URL_SUBSTR = "tribalwars.nl"
 DEFAULT_CLICK_SELECTOR = "#troop_confirm_submit"  # the "send attack" confirm button
 
 # CDP click is dispatched directly into Chrome's input pipeline;
-# the WebSocket round-trip (~1-3ms locally). 
+# the WebSocket round-trip (~1-3ms locally).
 # Network Jitter & latency can affect timing depending on server congestion and connection quality.
 # Tune if you see consistent miss.
-INPUT_JITTER_LATENCY_MS = 35
+INPUT_JITTER_LATENCY_MS = 75
+
+# Manual calibration. If clicks still land late by N ms, set this to +N.
+# If they land early, use a negative number.
+MANUAL_OFFSET_MS = 0
 
 
 # ---------- CDP wrapper -------------------------------------------------------
@@ -165,20 +169,35 @@ def parse_server_datetime(date_str: str, time_str: str) -> float:
 
 # ---------- Target time parsing ----------------------------------------------
 
-def parse_target(text: str, server_now: datetime) -> datetime:
+def parse_arrival(text: str, reference: datetime) -> datetime:
     text = text.strip()
     for fmt in ("%H:%M:%S.%f", "%H:%M:%S", "%H:%M"):
         try:
             t = datetime.strptime(text, fmt).time()
         except ValueError:
             continue
-        target = server_now.replace(
+        target = reference.replace(
             hour=t.hour, minute=t.minute, second=t.second, microsecond=t.microsecond
         )
-        if target <= server_now:
+        if target <= reference:
             target += timedelta(days=1)
         return target
-    raise ValueError(f"Could not parse time: {text!r}. Use HH:MM:SS.mmm")
+    raise ValueError(f"Could not parse arrival time: {text!r}. Use HH:MM:SS.mmm")
+
+
+def parse_travel(text: str) -> timedelta:
+    text = text.strip()
+    parts = text.split(":")
+    if len(parts) == 3:
+        h, m, s = parts
+    elif len(parts) == 2:
+        h, m, s = "0", parts[0], parts[1]
+    else:
+        raise ValueError(f"Could not parse travel time: {text!r}. Use HH:MM:SS")
+    try:
+        return timedelta(hours=int(h), minutes=int(m), seconds=int(s))
+    except ValueError:
+        raise ValueError(f"Could not parse travel time: {text!r}. Use HH:MM:SS")
 
 
 # ---------- Resolve click coordinates ----------------------------------------
@@ -211,38 +230,64 @@ def main():
     server_now = datetime.fromtimestamp(time.time() + offset)
     print(f"  Server time now: {server_now.strftime('%H:%M:%S.%f')[:-3]}")
 
-    # Time input
-    if len(sys.argv) >= 2:
-        target_text = sys.argv[1]
+    # Inputs
+    if len(sys.argv) >= 3:
+        arrival_text, travel_text = sys.argv[1], sys.argv[2]
     else:
-        target_text = input("Click at what SERVER time? (HH:MM:SS.mmm) ")
+        arrival_text = input("Gewenste aankomsttijd (server)? (HH:MM:SS.mmm) ")
+        travel_text = input("Reistijd? (HH:MM:SS) ")
 
-    # Selector input
+    arrival_server = parse_arrival(arrival_text, server_now)
+    travel = parse_travel(travel_text)
+
+    target_server = arrival_server - travel
+    if target_server <= server_now:
+        target_server += timedelta(days=1)
+        arrival_server += timedelta(days=1)
+
+    # Selector
     selector = input(f"CSS selector to click [default: {DEFAULT_CLICK_SELECTOR}]: ").strip()
     if not selector:
         selector = DEFAULT_CLICK_SELECTOR
-
     x, y = get_click_coords(cdp, selector)
     print(f"  Target element at ({x:.0f}, {y:.0f})")
 
-    target_server = parse_target(target_text, server_now)
+    def compute_fire_at(off: float) -> float:
+        return target_server.timestamp() - off - (INPUT_JITTER_LATENCY_MS + MANUAL_OFFSET_MS) / 1000.0
 
-    target_local_ts = target_server.timestamp() - offset
-    fire_at_ts = target_local_ts - INPUT_JITTER_LATENCY_MS / 1000.0
-
+    fire_at_ts = compute_fire_at(offset)
     wait = fire_at_ts - time.time()
     print(
-        f"Clicking at server time {target_server.strftime('%H:%M:%S.%f')[:-3]} "
-        f"(firing {INPUT_JITTER_LATENCY_MS}ms early, in {wait:.3f}s)"
+        f"Arrival {arrival_server.strftime('%H:%M:%S.%f')[:-3]}  "
+        f"- travel {travel}  "
+        f"= click {target_server.strftime('%H:%M:%S.%f')[:-3]} (server) "
+        f"(firing {INPUT_JITTER_LATENCY_MS + MANUAL_OFFSET_MS}ms early, in {wait:.3f}s)"
     )
 
-    # Countdown
+    # Countdown until 3s before fire — then re-sync for fresh offset.
+    resync_at_ts = fire_at_ts - 3.0
+    resynced = False
     while True:
         remaining = fire_at_ts - time.time()
         if remaining <= 0.05:
             break
+
+        if not resynced and time.time() >= resync_at_ts:
+            print("\rRe-syncing with server (final)...                 ")
+            offset = get_server_offset(cdp)
+            fire_at_ts = compute_fire_at(offset)
+            print(f"  Re-locked: clicking in {fire_at_ts - time.time():.3f}s")
+            resynced = True
+            continue
+
         print(f"\rT-minus {remaining:6.2f}s ", end="", flush=True)
         time.sleep(min(0.1, remaining - 0.05))
+
+    if not resynced:
+        print("\rRe-syncing (late)...                          ")
+        offset = get_server_offset(cdp)
+        fire_at_ts = compute_fire_at(offset)
+
     print("\rT-minus   0.00s ")
 
     # Busy-wait final stretch for ms accuracy
