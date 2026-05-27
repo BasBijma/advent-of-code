@@ -6,13 +6,11 @@ Setup:
   2. Relaunch with debugging enabled:
        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --remote-debugging-port=9222 --user-data-dir="$HOME/chrome-debug-profile" --no-first-run --no-default-browser-check "--remote-allow-origins=*"
   3. Log in to Tribal Wars and open the page you want to click on.
-  4. pip3 install websocket-client
-  5. python3 autoclicker.py [HH:MM:SS.mmm]
+  4. pip3 install websocket-client pyautogui
+  5. python3 autoclicker.py [HH:MM:SS.mmm] [HH:MM:SS]
 
-The script:
-  - Connects to the running Chrome via CDP.
-  - Reads in-game server time directly from the page (sub-second accurate).
-  - Dispatches a trusted mouse event at the chosen element's center.
+Reads in-game server time via CDP, then fires a real OS click at the cursor
+position at (arrival - travel).
 """
 
 import json
@@ -20,23 +18,38 @@ import sys
 import time
 import urllib.request
 from datetime import datetime, timedelta
+from pathlib import Path
 from websocket import create_connection
+import pyautogui
+
+pyautogui.PAUSE = 0          # no built-in post-action sleep
+pyautogui.FAILSAFE = True    # slam mouse to a corner to abort
 
 DEBUG_PORT = 9222
 TARGET_URL_SUBSTR = "tribalwars.nl"
 
-# CSS selector for the element to click. Override at the prompt or here.
-DEFAULT_CLICK_SELECTOR = "#troop_confirm_submit"  # the "send attack" confirm button
+# ms subtracted from fire time for input/network latency. Tune if clicks miss.
+INPUT_JITTER_LATENCY_MS = 3
 
-# CDP click is dispatched directly into Chrome's input pipeline;
-# the WebSocket round-trip (~1-3ms locally).
-# Network Jitter & latency can affect timing depending on server congestion and connection quality.
-# Tune if you see consistent miss.
-INPUT_JITTER_LATENCY_MS = 75
+# This subtracts from fire time (higher == earlier click)
+MANUAL_OFFSET_MS = 55
 
-# Manual calibration. If clicks still land late by N ms, set this to +N.
-# If they land early, use a negative number.
-MANUAL_OFFSET_MS = 0
+# Safety cap on the timer-sync offset ONLY (not input jitter / manual offset). If a sync
+# reading claims the server clock is more than this far ahead of local, clamp it: a runaway
+# offset would yank the fire way too early. Clamping the offset down always fires LATER,
+# which is the safe direction. Jitter + manual offset are still applied in full on top.
+SYNC_OFFSET_CAP_MS = 85
+
+# Final sync: average SYNC_SAMPLES offsets over SYNC_WINDOW_S before fire to cut rollover noise.
+SYNC_SAMPLES = 6
+SYNC_WINDOW_S = 15.0
+SYNC_HEADROOM_S = 1.5  # min seconds before fire to start another sample (a sync takes ~1s)
+
+# Early-click guard: clicking early is a dead sin, a little late is fine. When the final
+# sync samples disagree, lean toward the offset that fires LATEST (= the smallest
+# server-local offset) instead of the plain mean, which sits mid-noise and risks early.
+# 0.0 = plain mean (original), 1.0 = always use the safest (latest-firing) sample.
+EARLY_BIAS = 0.6
 
 
 # ---------- CDP wrapper -------------------------------------------------------
@@ -65,11 +78,6 @@ class CDP:
             raise RuntimeError(f"JS error: {r['result'].get('description')}")
         return r["result"].get("value")
 
-    def click_at(self, x, y):
-        common = {"x": x, "y": y, "button": "left", "clickCount": 1}
-        self.call("Input.dispatchMouseEvent", {"type": "mousePressed", **common})
-        self.call("Input.dispatchMouseEvent", {"type": "mouseReleased", **common})
-
 
 def find_tab():
     with urllib.request.urlopen(f"http://localhost:{DEBUG_PORT}/json") as r:
@@ -86,26 +94,14 @@ def find_tab():
 # ---------- Server time sync (via the page itself) ----------------------------
 
 def get_server_offset(cdp: CDP) -> float:
-    """
-    Returns (server_unix_ms - local_unix_ms) / 1000 — the offset to add to
-    local time.time() to get server time.
-
-    Reads the page's #serverTime / #serverDate elements (TW updates these every
-    second). We poll until the text changes — that boundary pins the server
-    second to a precise local timestamp.
-    """
+    """Return server_time - local_time (s). Polls #serverTime until it ticks for sub-second precision."""
     expr = """
         (() => {
             const t = document.getElementById('serverTime');
             const d = document.getElementById('serverDate');
-            return {
-                time: t ? t.textContent.trim() : null,
-                date: d ? d.textContent.trim() : null,
-                now: Date.now()
-            };
+            return {time: t ? t.textContent.trim() : null, date: d ? d.textContent.trim() : null};
         })()
     """
-
     print("Syncing to in-game server clock...")
     prev = None
     for _ in range(80):  # up to ~4s
@@ -113,18 +109,13 @@ def get_server_offset(cdp: CDP) -> float:
         sample = cdp.eval(expr)
         local_after = time.time() * 1000
         if not sample or not sample.get("time"):
-            raise RuntimeError(
-                "Couldn't find #serverTime element. Make sure you're on a game page."
-            )
+            raise RuntimeError("Couldn't find #serverTime element. Make sure you're on a game page.")
 
         if prev is not None and sample["time"] != prev["time"]:
-            # Rollover: the new server second started somewhere between
-            # local_before and local_after. Use the midpoint.
+            # New server second began between local_before/after; use midpoint.
             server_sec_ms = parse_server_datetime(sample["date"], sample["time"]) * 1000
-            local_ms_at_boundary = (local_before + local_after) / 2
-            offset_ms = server_sec_ms - local_ms_at_boundary
-            rtt_ms = local_after - local_before
-            print(f"  Server offset: {offset_ms:+.0f}ms  (CDP RTT {rtt_ms:.1f}ms)")
+            offset_ms = server_sec_ms - (local_before + local_after) / 2
+            print(f"  Server offset: {offset_ms:+.0f}ms  (CDP RTT {local_after - local_before:.1f}ms)")
             return offset_ms / 1000.0
 
         prev = sample
@@ -134,18 +125,13 @@ def get_server_offset(cdp: CDP) -> float:
 
 
 def parse_server_datetime(date_str: str, time_str: str) -> float:
-    """
-    TW NL shows the server time as e.g. 'om 14:30:00' and date as 'op 20/05/26'.
-    Strip the leading word and parse. Returns Unix seconds.
-    """
-    # Strip common Dutch/English prefixes ('op', 'on')
+    """Parse TW's 'om 14:30:00' / 'op 20/05/26' server clock to Unix seconds."""
     for prefix in ("op ", "on ", "om ", "at "):
         if date_str.lower().startswith(prefix):
             date_str = date_str[len(prefix):]
         if time_str.lower().startswith(prefix):
             time_str = time_str[len(prefix):]
 
-    # Try a few date formats
     for fmt in ("%d/%m/%y", "%d/%m/%Y", "%Y-%m-%d", "%d.%m.%Y"):
         try:
             d = datetime.strptime(date_str, fmt).date()
@@ -200,23 +186,38 @@ def parse_travel(text: str) -> timedelta:
         raise ValueError(f"Could not parse travel time: {text!r}. Use HH:MM:SS")
 
 
-# ---------- Resolve click coordinates ----------------------------------------
+# ---------- Averaged final sync ----------------------------------------------
 
-def get_click_coords(cdp: CDP, selector: str) -> tuple[float, float]:
-    expr = f"""
-        (() => {{
-            const el = document.querySelector({json.dumps(selector)});
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            return {{x: r.x + r.width/2, y: r.y + r.height/2, visible: r.width > 0 && r.height > 0}};
-        }})()
-    """
-    pos = cdp.eval(expr)
-    if not pos:
-        raise RuntimeError(f"Element not found for selector: {selector!r}")
-    if not pos.get("visible"):
-        raise RuntimeError(f"Element {selector!r} has zero size (hidden?).")
-    return pos["x"], pos["y"]
+def sample_offsets(cdp: CDP, start_ts: float, end_ts: float, n: int, fire_at_ts: float):
+    """Average up to n offsets across [start_ts, end_ts]; stop early near fire. None if none ran."""
+    offsets = []
+    for i in range(n):
+        sample_at = start_ts + (end_ts - start_ts) * i / (n - 1) if n > 1 else start_ts
+        sleep_for = sample_at - time.time()
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+        if fire_at_ts - time.time() < SYNC_HEADROOM_S:
+            print(f"  Stopping early at sample {i + 1}/{n} — not enough time left.")
+            break
+
+        off = get_server_offset(cdp)
+        offsets.append(off)
+        print(f"  sample {i + 1}/{n}: {off * 1000:+.0f}ms")
+
+    if not offsets:
+        return None
+    mean = sum(offsets) / len(offsets)
+    lo = min(offsets)  # smallest offset == latest (safest) fire; can't click early on it
+    chosen = lo + (1.0 - EARLY_BIAS) * (mean - lo)  # blend mean->safest by EARLY_BIAS
+    spread = (max(offsets) - min(offsets)) * 1000
+    print(
+        f"  Offsets: mean {mean * 1000:+.0f}ms, safest {lo * 1000:+.0f}ms"
+        f" -> using {chosen * 1000:+.0f}ms"
+        f"  (early-bias {EARLY_BIAS:.2f}, spread {spread:.0f}ms over {len(offsets)})"
+    )
+    return chosen
+
 
 
 # ---------- Main --------------------------------------------------------------
@@ -245,15 +246,17 @@ def main():
         target_server += timedelta(days=1)
         arrival_server += timedelta(days=1)
 
-    # Selector
-    selector = input(f"CSS selector to click [default: {DEFAULT_CLICK_SELECTOR}]: ").strip()
-    if not selector:
-        selector = DEFAULT_CLICK_SELECTOR
-    x, y = get_click_coords(cdp, selector)
-    print(f"  Target element at ({x:.0f}, {y:.0f})")
+    print("Position the mouse over the button now — it clicks wherever the cursor is.")
+
+    anticipation_ms = INPUT_JITTER_LATENCY_MS + MANUAL_OFFSET_MS
 
     def compute_fire_at(off: float) -> float:
-        return target_server.timestamp() - off - (INPUT_JITTER_LATENCY_MS + MANUAL_OFFSET_MS) / 1000.0
+        # Cap the sync offset only; jitter + manual offset are applied in full on top.
+        capped_off = min(off, SYNC_OFFSET_CAP_MS / 1000.0)
+        return target_server.timestamp() - capped_off - anticipation_ms / 1000.0
+
+    if offset * 1000 > SYNC_OFFSET_CAP_MS:
+        print(f"  Sync offset {offset * 1000:+.0f}ms over cap — clamped to {SYNC_OFFSET_CAP_MS}ms for firing.")
 
     fire_at_ts = compute_fire_at(offset)
     wait = fire_at_ts - time.time()
@@ -261,42 +264,63 @@ def main():
         f"Arrival {arrival_server.strftime('%H:%M:%S.%f')[:-3]}  "
         f"- travel {travel}  "
         f"= click {target_server.strftime('%H:%M:%S.%f')[:-3]} (server) "
-        f"(firing {INPUT_JITTER_LATENCY_MS + MANUAL_OFFSET_MS}ms early, in {wait:.3f}s)"
+        f"(anticipation {anticipation_ms}ms + sync, firing in {wait:.3f}s)"
     )
 
-    # Countdown until 3s before fire — then re-sync for fresh offset.
-    resync_at_ts = fire_at_ts - 3.0
-    resynced = False
+    # Phase 1: wait until the sync window opens (SYNC_WINDOW_S before fire).
+    window_start_ts = fire_at_ts - SYNC_WINDOW_S
+    while True:
+        remaining = window_start_ts - time.time()
+        if remaining <= 0.05:
+            break
+        print(
+            f"\rT-minus {fire_at_ts - time.time():7.2f}s "
+            f"(sync window opens in {remaining:5.1f}s) ",
+            end="", flush=True,
+        )
+        time.sleep(min(0.2, remaining))
+    print()
+
+    # Phase 2: sample & average offsets; last sample ~2s before fire.
+    window_end_ts = fire_at_ts - 2.0
+    avg_offset = sample_offsets(
+        cdp, max(window_start_ts, time.time()), window_end_ts, SYNC_SAMPLES, fire_at_ts
+    )
+    if avg_offset is not None:
+        offset = avg_offset
+        if offset * 1000 > SYNC_OFFSET_CAP_MS:
+            print(f"  Re-locked sync {offset * 1000:+.0f}ms over cap — clamped to {SYNC_OFFSET_CAP_MS}ms.")
+        fire_at_ts = compute_fire_at(offset)
+        print(f"  Re-locked: clicking in {fire_at_ts - time.time():.3f}s")
+    else:
+        print("  No time to re-sample — using initial sync offset.")
+
+    # Phase 3: final countdown.
     while True:
         remaining = fire_at_ts - time.time()
         if remaining <= 0.05:
             break
-
-        if not resynced and time.time() >= resync_at_ts:
-            print("\rRe-syncing with server (final)...                 ")
-            offset = get_server_offset(cdp)
-            fire_at_ts = compute_fire_at(offset)
-            print(f"  Re-locked: clicking in {fire_at_ts - time.time():.3f}s")
-            resynced = True
-            continue
-
         print(f"\rT-minus {remaining:6.2f}s ", end="", flush=True)
         time.sleep(min(0.1, remaining - 0.05))
-
-    if not resynced:
-        print("\rRe-syncing (late)...                          ")
-        offset = get_server_offset(cdp)
-        fire_at_ts = compute_fire_at(offset)
-
     print("\rT-minus   0.00s ")
 
     # Busy-wait final stretch for ms accuracy
     while time.time() < fire_at_ts:
         pass
 
-    cdp.click_at(x, y)
-    click_server = datetime.fromtimestamp(time.time() + offset)
-    print(f"Clicked at server time {click_server.strftime('%H:%M:%S.%f')[:-3]}")
+    t_fire = time.time()
+    pyautogui.click()  # real OS click; mouse is already positioned
+    t_done = time.time()
+
+    # Everything below runs after the click, so it doesn't affect timing.
+    fire_err_ms = (t_fire - fire_at_ts) * 1000              # busy-wait precision
+    click_ms = (t_done - t_fire) * 1000                     # pyautogui call cost
+    vs_target_ms = (t_fire + offset - target_server.timestamp()) * 1000
+    click_server = datetime.fromtimestamp(t_fire + offset)
+    print(
+        f"Clicked at server {click_server.strftime('%H:%M:%S.%f')[:-3]}  "
+        f"(fire err {fire_err_ms:+.1f}ms, click {click_ms:.1f}ms, vs target {vs_target_ms:+.0f}ms)"
+    )
 
 
 if __name__ == "__main__":
